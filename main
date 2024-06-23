@@ -1,0 +1,173 @@
+#region Using declarations
+using System;
+using NinjaTrader.Cbi;
+using NinjaTrader.NinjaScript.Indicators;
+using NinjaTrader.NinjaScript.Strategies;
+using NinjaTrader.NinjaScript;
+using System.Windows.Media;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+    public class range1 : Strategy
+    {
+        private double upperRange;
+        private double lowerRange;
+        private int contractQuantity = 1;
+        private int profitTargetTicks = 20;
+        private int stopLossTicks = 60;
+        private bool tradeTakenThisSession = false;
+
+        [Range(1, int.MaxValue)]
+        [NinjaScriptProperty]
+        [Display(Name = "Contract Quantity", Order = 1, GroupName = "Parameters")]
+        public int ContractQuantity
+        {
+            get { return contractQuantity; }
+            set { contractQuantity = Math.Max(1, value); }
+        }
+
+        [Range(1, int.MaxValue)]
+        [NinjaScriptProperty]
+        [Display(Name = "Profit Target (Ticks)", Order = 2, GroupName = "Parameters")]
+        public int ProfitTargetTicks
+        {
+            get { return profitTargetTicks; }
+            set { profitTargetTicks = Math.Max(1, value); }
+        }
+
+        [Range(1, int.MaxValue)]
+        [NinjaScriptProperty]
+        [Display(Name = "Stop Loss (Ticks)", Order = 3, GroupName = "Parameters")]
+        public int StopLossTicks
+        {
+            get { return stopLossTicks; }
+            set { stopLossTicks = Math.Max(1, value); }
+        }
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Description = @"Enter the description for your new custom Strategy here.";
+                Name = "range1";
+
+                Calculate = Calculate.OnEachTick;
+                EntriesPerDirection = 1;
+                EntryHandling = EntryHandling.UniqueEntries;
+                IsExitOnSessionCloseStrategy = true;
+                ExitOnSessionCloseSeconds = 30;
+                IsFillLimitOnTouch = true;
+                MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+                OrderFillResolution = OrderFillResolution.Standard;
+                Slippage = 2;
+                StartBehavior = StartBehavior.WaitUntilFlat;
+                TimeInForce = TimeInForce.Gtc;
+                TraceOrders = true;
+                RealtimeErrorHandling = RealtimeErrorHandling.StopCancelClose;
+                StopTargetHandling = StopTargetHandling.PerEntryExecution;
+                BarsRequiredToTrade = 20;
+                upperRange = double.MinValue;
+                lowerRange = double.MaxValue;
+            }
+            else if (State == State.DataLoaded)
+            {
+                lowerRange = High[0];
+                upperRange = Low[0];
+            }
+            else if (State == State.Configure)
+            {
+                AddDataSeries(NinjaTrader.Data.BarsPeriodType.Minute, 15);
+                upperRange = double.MinValue;
+                lowerRange = double.MaxValue;
+            }
+        }
+
+        protected override void OnBarUpdate()
+{
+    if (CurrentBars[0] == 0 || BarsArray[0].IsFirstBarOfSession)
+    {
+        upperRange = double.MinValue;
+        lowerRange = double.MaxValue;
+        tradeTakenThisSession = false;
+
+        RemoveDrawObject("upperRangeLine");
+        RemoveDrawObject("lowerRangeLine");
+    }
+
+    if (ToTime(Time[0]) >= 60000 && ToTime(Time[0]) <= 73000)
+    {
+        upperRange = Math.Max(upperRange, High[0]);
+        lowerRange = Math.Min(lowerRange, Low[0]);
+
+        NinjaTrader.NinjaScript.DrawingTools.Draw.HorizontalLine(this, "upperRangeLine", upperRange, Brushes.Red);
+        NinjaTrader.NinjaScript.DrawingTools.Draw.HorizontalLine(this, "lowerRangeLine", lowerRange, Brushes.Green);
+    }
+
+    if (ToTime(Time[0]) >= 103000 && ToTime(Time[0]) <= 160000 && !tradeTakenThisSession)
+    {
+        // Ensure no conflicting orders exist
+        CancelAllOrders();
+
+        if (Close[0] > lowerRange && Close[0] < upperRange)
+        {
+            // Set sell limit order at the upper range
+            EnterShortLimit(0, true, contractQuantity, upperRange, "ShortEntry");
+            // Set buy limit order at the lower range
+            EnterLongLimit(0, true, contractQuantity, lowerRange, "LongEntry");
+
+            tradeTakenThisSession = true; // Set flag to true once orders are placed
+        }
+        else
+        {
+            if (Close[0] > upperRange)
+            {
+                EnterLongLimit(0, true, contractQuantity, upperRange, "LongEntry");
+            }
+            else if (Close[0] < lowerRange)
+            {
+                EnterShortLimit(0, true, contractQuantity, lowerRange, "ShortEntry");
+            }
+            else
+            {
+                EnterLongLimit(0, true, contractQuantity, lowerRange, "LongEntry");
+                EnterShortLimit(0, true, contractQuantity, upperRange, "ShortEntry");
+            }
+        }
+    }
+}
+
+
+        protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
+        {
+            if (execution.Order.OrderAction == OrderAction.Buy && execution.Order.Name == "LongEntry")
+            {
+                SetStopLoss(CalculationMode.Price, price - (stopLossTicks * TickSize));
+                SetProfitTarget(CalculationMode.Price, price + (profitTargetTicks * TickSize));
+                tradeTakenThisSession = true;
+                CancelAllOrders();
+            }
+
+            if (execution.Order.OrderAction == OrderAction.SellShort && execution.Order.Name == "ShortEntry")
+            {
+                SetStopLoss(CalculationMode.Price, price + (stopLossTicks * TickSize));
+                SetProfitTarget(CalculationMode.Price, price - (profitTargetTicks * TickSize));
+                tradeTakenThisSession = true;
+                CancelAllOrders();
+            }
+        }
+
+        private void CancelAllOrders()
+        {
+            foreach (var order in Orders)
+            {
+                if (order.OrderState == OrderState.Working || order.OrderState == OrderState.Accepted)
+                {
+                    CancelOrder(order);
+                }
+            }
+        }
+    }
+}
